@@ -56,19 +56,36 @@ export class BcCliExtractor {
     try {
       console.log(`Starting CLI extraction from BusinessConnect at: ${bcHome}`);
       
-      // Handle the specific path provided for BusinessConnect
-      // The user mentioned their BC is at C:\tibcoBC\bc\7.4\bin
+      // IMPORTANT FIX: Check if the path already points to the bin directory with bcengine.exe
+      // This handles when users input the full path like C:\tibcoBC\bc\7.4\bin
       let bcBinPath = bcHome;
+      let isCompletePath = false;
       
-      // Check if the user is providing just the TIBCO root or the full BC path
-      if (!bcHome.toLowerCase().includes('\\bc\\') && !bcHome.includes('/bc/')) {
+      // Check if the path already contains bcengine.exe
+      const enginePath = path.join(bcHome, "bcengine.exe");
+      if (fs.existsSync(enginePath)) {
+        console.log(`Found bcengine.exe directly at the provided path: ${enginePath}`);
+        isCompletePath = true;
+      }
+      
+      // Only try other paths if the provided path is not already complete
+      if (!isCompletePath && !bcHome.toLowerCase().includes('\\bc\\7.4\\bin') && !bcHome.includes('/bc/7.4/bin')) {
         // Try the path the user explicitly mentioned: C:\tibcoBC\bc\7.4\bin
-        const specificBcPath = path.join(bcHome + 'BC', 'bc', '7.4', 'bin');
+        const specificBcPath = path.join(bcHome, "bc", "7.4", "bin");
         console.log(`Checking specific BusinessConnect path: ${specificBcPath}`);
         
         if (fs.existsSync(specificBcPath)) {
           console.log(`Found BusinessConnect at specific path: ${specificBcPath}`);
           bcBinPath = specificBcPath;
+        } else {
+          // Alternative attempt with BC suffix
+          const altPath = path.join(bcHome + 'BC', 'bc', '7.4', 'bin');
+          console.log(`Checking alternative BusinessConnect path: ${altPath}`);
+          
+          if (fs.existsSync(altPath)) {
+            console.log(`Found BusinessConnect at alternative path: ${altPath}`);
+            bcBinPath = altPath;
+          }
         }
       }
       
@@ -111,9 +128,10 @@ export class BcCliExtractor {
       console.log("Using the specified BusinessConnect path...");
       
       try {
-        // Create direct path to BC engine at the location user mentioned
-        const directBcPath = "C:\\tibcoBC\\bc\\7.4\\bin";
-        console.log(`Trying direct path to BusinessConnect: ${directBcPath}`);
+        // Use exactly the path provided by the user - don't add any extra folders
+        // Just clean up any trailing slashes for consistency
+        const directBcPath = bcHome.replace(/[\/\\]$/, "");
+        console.log(`Using exact provided path to BusinessConnect: ${directBcPath}`);
         
         if (fs.existsSync(directBcPath)) {
           console.log(`Confirmed BusinessConnect directory exists at: ${directBcPath}`);
@@ -123,7 +141,7 @@ export class BcCliExtractor {
           if (fs.existsSync(enginePath)) {
             console.log(`Found bcengine.exe at: ${enginePath}`);
             
-            // Create the export command using the specific path
+            // Create the export command using the specific path directly - no extra path components
             const exportCommand = `cd /d "${directBcPath}" && bcengine.exe -exportConfigRepo "${outputFile}" -overwrite`;
             console.log(`Executing export command: ${exportCommand}`);
             

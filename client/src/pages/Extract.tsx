@@ -66,16 +66,20 @@ export default function Extract() {
   });
 
   // Update form values when configs load
-  useState(() => {
+  // Use React's useEffect to properly watch for config changes
+  React.useEffect(() => {
     if (bcHomeConfig?.value?.path) {
       cliForm.setValue('bcHome', bcHomeConfig.value.path);
     }
+  }, [bcHomeConfig, cliForm]);
+  
+  React.useEffect(() => {
     if (bcCredentialsConfig?.value) {
       restForm.setValue('bcHome', bcCredentialsConfig.value.bcHome || '');
       restForm.setValue('username', bcCredentialsConfig.value.username || '');
       restForm.setValue('password', bcCredentialsConfig.value.password || '');
     }
-  });
+  }, [bcCredentialsConfig, restForm]);
 
   // Mutation for extraction
   const extractMutation = useMutation({
