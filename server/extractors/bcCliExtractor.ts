@@ -56,17 +56,16 @@ export class BcCliExtractor {
     try {
       console.log(`Starting CLI extraction from BusinessConnect at: ${bcHome}`);
       
-      // For TIBCO installations that don't have a standard structure, let's check for specific patterns
+      // For TIBCO installations that don't have a standard structure, we need a new approach
       // Normalized path to handle Windows backslashes
       const normalizedBcHome = bcHome.replace(/\\/g, '/');
       console.log(`Normalized path: ${normalizedBcHome}`);
       
-      // Look for specific TIBCO components that might contain BusinessConnect
-      // From your folder structure, we'll check folders like "tpcl", "ems", "tra", etc.
+      // Look for specific TIBCO components from the user's folder structure
       const folderChecks = [
-        "tpcl", "tra", "components", "bw", "designer", "tibcojre", "tools"
+        "tpcl", "tra", "components", "bw", "designer", "tools", "tibcojre", "hawk", "ems"
       ];
-      console.log(`Checking for BusinessConnect components in known TIBCO subfolders...`);
+      console.log(`Checking for BusinessConnect components in TIBCO subfolders...`);
       
       folderChecks.forEach(folder => {
         const folderPath = path.join(bcHome, folder);
@@ -90,103 +89,185 @@ export class BcCliExtractor {
       // Build the CLI command - handle paths differently based on platform
       const isWindows = process.platform === 'win32' || bcHome.includes(':\\');
       
-      // On Windows, we need to use the correct path format and executable name
-      let bcBinPath;
-      let engineExecutable;
-      
-      // Check for different possible path structures for TIBCO BusinessConnect
-      // Based on the user's TIBCO folder structure, we need to look in various locations
-      const possibleBcPaths = isWindows ? [
-        path.join(bcHome, "tpcl", "bin"),
-        path.join(bcHome, "bw", "bin"),
-        path.join(bcHome, "tra", "bin"),
-        path.join(bcHome, "components", "BusinessConnect", "bin"),
-        path.join(bcHome, "bc", "bin"),
-        path.join(bcHome, "BusinessConnect", "bin"),
-        path.join(bcHome, "TIBCO", "BusinessConnect", "bin"),
-        path.join(bcHome, "bin")
-      ] : [
-        path.join(bcHome, "bc", "bin"),
-        path.join(bcHome, "BusinessConnect", "bin"),
-        path.join(bcHome, "bin")
-      ];
-      
-      // Find the first existing path
-      let pathFound = false;
-      for (const possiblePath of possibleBcPaths) {
-        try {
-          console.log(`Checking for BC binaries at: ${possiblePath}`);
-          if (fs.existsSync(possiblePath)) {
-            console.log(`Found BC binaries at: ${possiblePath}`);
-            bcBinPath = isWindows ? possiblePath.replace(/\//g, '\\') : possiblePath;
-            pathFound = true;
-            break;
-          }
-        } catch (err) {
-          console.log(`Error checking path ${possiblePath}:`, err);
-        }
-      }
-      
-      if (!pathFound) {
-        // Default to the standard path even if not found
-        console.log(`No BC binaries found in common locations, using default path`);
-        bcBinPath = isWindows 
-          ? path.join(bcHome, "bc", "bin").replace(/\//g, '\\')
-          : path.join(bcHome, "bc", "bin");
-      }
-      
-      // Set the appropriate executable name
-      if (isWindows) {
-        // Check for the existence of various possible executable names
-        const possibleExecutables = ["bcengine.exe", "BusinessConnect.exe", "bc.exe", "bcadmin.exe"];
-        let executableFound = false;
+      if (!isWindows) {
+        // For non-Windows platforms, use the standard approach
+        const bcBinPath = path.join(bcHome, "bc", "bin");
+        const command = `cd "${bcBinPath}" && ./bcengine -exportConfigRepo "${outputFile}" -overwrite`;
         
-        for (const possibleExe of possibleExecutables) {
+        console.log(`Executing BusinessConnect CLI export: ${command}`);
+        const { stdout, stderr } = await exec(command);
+        console.log("Export stdout:", stdout);
+        if (stderr) console.error("Export stderr:", stderr);
+        
+        // Check if the file was created
+        if (!fs.existsSync(outputFile)) {
+          throw new Error("Export file was not created");
+        }
+        
+        return await this.processCsxFile(outputFile);
+      }
+      
+      // For Windows, we need a more flexible approach since the structure varies significantly
+      console.log("Windows environment detected, using flexible BusinessConnect detection...");
+      
+      // First, let's search for bcengine.exe in the TIBCO directory
+      console.log("Searching for BusinessConnect executable (bcengine.exe) in the TIBCO directory...");
+      
+      try {
+        // Option 1: Try 'dir /s' command to find bcengine.exe recursively
+        const searchCommand = `cd /d "${bcHome}" && dir /s /b *bcengine.exe*`;
+        console.log(`Executing search command: ${searchCommand}`);
+        
+        const { stdout: searchResult } = await exec(searchCommand);
+        
+        if (searchResult && searchResult.trim()) {
+          // Found the executable
+          const executablePaths = searchResult.trim().split(/\r?\n/);
+          console.log(`Found bcengine.exe at: ${executablePaths[0]}`);
+          
+          // Use the first match
+          const enginePath = executablePaths[0];
+          const bcBinPath = path.dirname(enginePath);
+          const engineExecutable = path.basename(enginePath);
+          
+          // Create the export command
+          const exportCommand = `cd /d "${bcBinPath}" && ${engineExecutable} -exportConfigRepo "${outputFile}" -overwrite`;
+          console.log(`Executing export command: ${exportCommand}`);
+          
           try {
-            const exePath = path.join(bcBinPath, possibleExe);
-            console.log(`Checking for executable: ${exePath}`);
-            if (fs.existsSync(exePath)) {
-              console.log(`Found executable: ${exePath}`);
-              engineExecutable = possibleExe;
-              executableFound = true;
-              break;
+            const { stdout, stderr } = await exec(exportCommand);
+            console.log("Export command output:", stdout);
+            if (stderr) console.error("Export command stderr:", stderr);
+            
+            // Check if the file was created
+            if (!fs.existsSync(outputFile)) {
+              throw new Error("Export file was not created after executing the command");
             }
-          } catch (err) {
-            console.log(`Error checking executable ${possibleExe}:`, err);
+            
+            return await this.processCsxFile(outputFile);
+          } catch (exportError) {
+            console.error("Export command failed:", exportError);
+            throw new Error(`Failed to execute BusinessConnect export: ${exportError.message}`);
+          }
+        } else {
+          console.log("No bcengine.exe found with directory search. Trying PowerShell search...");
+          
+          // Option 2: Try PowerShell to find bcengine.exe recursively (often more reliable)
+          const psCommand = `powershell -Command "Get-ChildItem -Path '${bcHome}' -Recurse -Filter 'bcengine.exe' | Select-Object -First 1 -ExpandProperty FullName"`;
+          console.log(`Executing PowerShell search: ${psCommand}`);
+          
+          const { stdout: psResult } = await exec(psCommand);
+          
+          if (psResult && psResult.trim()) {
+            const enginePath = psResult.trim();
+            console.log(`Found bcengine.exe with PowerShell at: ${enginePath}`);
+            
+            const bcBinPath = path.dirname(enginePath);
+            const engineExecutable = path.basename(enginePath);
+            
+            // Create the export command
+            const exportCommand = `cd /d "${bcBinPath}" && ${engineExecutable} -exportConfigRepo "${outputFile}" -overwrite`;
+            console.log(`Executing export command: ${exportCommand}`);
+            
+            try {
+              const { stdout, stderr } = await exec(exportCommand);
+              console.log("Export command output:", stdout);
+              if (stderr) console.error("Export command stderr:", stderr);
+              
+              // Check if the file was created
+              if (!fs.existsSync(outputFile)) {
+                throw new Error("Export file was not created after executing the command");
+              }
+              
+              return await this.processCsxFile(outputFile);
+            } catch (exportError) {
+              console.error("Export command failed:", exportError);
+              throw new Error(`Failed to execute BusinessConnect export: ${exportError.message}`);
+            }
+          } else {
+            // Option 3: Try to look in some specific well-known locations in the user's TIBCO structure
+            const specificLocations = [
+              path.join(bcHome, "bw", "6.5", "bin"),
+              path.join(bcHome, "tra", "6.0", "bin"),
+              path.join(bcHome, "tra", "5.11", "bin"),
+              path.join(bcHome, "tra", "5.10", "bin")
+            ];
+            
+            console.log("Checking specific TIBCO BusinessConnect locations...");
+            
+            for (const location of specificLocations) {
+              const enginePath = path.join(location, "bcengine.exe");
+              console.log(`Checking for bcengine.exe at: ${enginePath}`);
+              
+              if (fs.existsSync(enginePath)) {
+                console.log(`Found bcengine.exe at: ${enginePath}`);
+                
+                // Create the export command
+                const exportCommand = `cd /d "${location}" && bcengine.exe -exportConfigRepo "${outputFile}" -overwrite`;
+                console.log(`Executing export command: ${exportCommand}`);
+                
+                try {
+                  const { stdout, stderr } = await exec(exportCommand);
+                  console.log("Export command output:", stdout);
+                  if (stderr) console.error("Export command stderr:", stderr);
+                  
+                  // Check if the file was created
+                  if (!fs.existsSync(outputFile)) {
+                    throw new Error("Export file was not created after executing the command");
+                  }
+                  
+                  return await this.processCsxFile(outputFile);
+                } catch (exportError) {
+                  console.error("Export command failed:", exportError);
+                  throw new Error(`Failed to execute BusinessConnect export: ${exportError.message}`);
+                }
+              }
+            }
+            
+            // Option 4: If all else fails, try custom extraction approach
+            console.log("BusinessConnect executable not found. Attempting alternative extraction approach...");
+            
+            // Check if user has bcexport.bat or similar in their TIBCO structure
+            const exportPaths = [
+              path.join(bcHome, "bin", "bcexport.bat"),
+              path.join(bcHome, "bw", "bin", "bcexport.bat"),
+              path.join(bcHome, "tra", "bin", "bcexport.bat"),
+              path.join(bcHome, "tools", "bcexport.bat")
+            ];
+            
+            for (const exportPath of exportPaths) {
+              if (fs.existsSync(exportPath)) {
+                console.log(`Found export script at: ${exportPath}`);
+                
+                const exportDir = path.dirname(exportPath);
+                const exportCommand = `cd /d "${exportDir}" && bcexport.bat "${outputFile}"`;
+                console.log(`Executing export script: ${exportCommand}`);
+                
+                try {
+                  const { stdout, stderr } = await exec(exportCommand);
+                  console.log("Export script output:", stdout);
+                  if (stderr) console.error("Export script stderr:", stderr);
+                  
+                  // Check if the file was created
+                  if (!fs.existsSync(outputFile)) {
+                    throw new Error("Export file was not created after executing the script");
+                  }
+                  
+                  return await this.processCsxFile(outputFile);
+                } catch (exportError) {
+                  console.error("Export script failed:", exportError);
+                  throw new Error(`Failed to execute export script: ${exportError.message}`);
+                }
+              }
+            }
+            
+            throw new Error("Could not find BusinessConnect executable in your TIBCO installation. Please check your TIBCO_HOME path and ensure that BusinessConnect is installed.");
           }
         }
-        
-        if (!executableFound) {
-          // Default to the standard executable even if not found
-          engineExecutable = "bcengine.exe";
-        }
-      } else {
-        // Unix executable
-        engineExecutable = "./bcengine";
+      } catch (searchError) {
+        console.error("Error searching for BusinessConnect executable:", searchError);
+        throw new Error(`Failed to locate BusinessConnect executable: ${searchError.message}`);
       }
-      
-      // Use appropriate command format for the OS
-      const command = isWindows
-        ? `cd /d "${bcBinPath}" && ${engineExecutable} -exportConfigRepo "${outputFile}" -overwrite`
-        : `cd "${bcBinPath}" && ${engineExecutable} -exportConfigRepo "${outputFile}" -overwrite`;
-      
-      console.log(`Executing BusinessConnect CLI export: ${command}`);
-      
-      // Execute the command
-      const { stdout, stderr } = await exec(command);
-      console.log("Export stdout:", stdout);
-      
-      if (stderr) {
-        console.error("Export stderr:", stderr);
-      }
-      
-      // Check if the file was created
-      if (!fs.existsSync(outputFile)) {
-        throw new Error("Export file was not created");
-      }
-      
-      // Extract and parse the CSX file (which is a ZIP of XML files)
-      return await this.processCsxFile(outputFile);
     } catch (error) {
       console.error("Error during CLI extraction:", error);
       throw new Error(`CLI extraction failed: ${error instanceof Error ? error.message : String(error)}`);
