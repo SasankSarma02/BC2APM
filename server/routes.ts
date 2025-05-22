@@ -122,7 +122,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "Invalid extraction parameters", errors: result.error.format() });
       }
 
-      const { method, bcHome, credentials } = result.data;
+      // Use environment variable BC_HOME_PATH if provided, otherwise use the path from the request
+      let { method, bcHome, credentials } = result.data;
+      
+      // Override bcHome with the environment variable if it exists
+      if (process.env.BC_HOME_PATH) {
+        console.log(`Using BusinessConnect path from environment: ${process.env.BC_HOME_PATH}`);
+        bcHome = process.env.BC_HOME_PATH;
+      }
+      
       console.log(`Starting ${method} extraction from TIBCO_HOME: ${bcHome}`);
 
       // Create extraction record
