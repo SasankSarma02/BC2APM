@@ -1,0 +1,74 @@
+Below is a pattern that works well when BusinessConnect (BC) runs only inside an on-prem DMZ while Anypoint Partner Manager (APM) lives in the cloud.
+The idea is to drop a single, self-contained “migration agent” on the BC host (or a jump box in the same subnet) that can:
+
+export every BC artefact without asking users to click a UI
+
+transform it into a neutral JSON model you can inspect and version‐control locally
+
+push (or stage for push) those objects into APM through its public REST APIs
+
+1 What you can pull directly from an on-prem BC install
+Method	Coverage	How it runs on the server	Reference
+Export CLI bcengine -exportConfigRepo …	100 % of configuration (trading partners, certificates, channels, maps, etc.) as a single .csx file	Non-interactive; executes in seconds; can be invoked by any shell script or container entry-point	
+TIBCO Docs
+Trading Community REST API	~70 % (excellent for deltas after the full export)	HTTPS calls from the agent to http(s)://<bc-host>:9000/businessconnect/v1/…	
+TIBCO Community
+TIBCO Community
+Database query (Oracle / MySQL)	Optional (message tracking, custom tables)	JDBC/ODBC read-only account; never touches config	product docs
+RPA bot	Only if a GUI-only corner case appears	Run headless Chrome/Edge on the same host; bot code shipped with the agent	your existing RPA know-how
+
+Why use the CLI first?
+A .csx file is a ZIP of readable XML fragments – it is authoritative, versioned with a single checksum, and immune to UI/API changes. 
+TIBCO Support
+
+2 Minimal, repeatable architecture to drop on the server
+text
+Copy
+Edit
+╔══════════════════════════════════════════════════════════╗
+║  bc-migration-agent (single Docker / native install)     ║
+║  ───────────────────────────────────────────────────────  ║
+║  1. extractor:                                           ║
+║     • runs BC export CLI                                 ║
+║     • optional: REST delta pull                          ║
+║  2. canonicalizer:                                       ║
+║     • unzips .csx → XML → JSON                           ║
+║     • stores in local Postgres + /data/git repo          ║
+║  3. mapper: DataWeave CLI (bundled JAR)                  ║
+║  4. loader:                                              ║
+║     • pushes to APM v2 APIs (HTTPS, outbound-only)       ║
+║  5. ui: lightweight React SPA on http://127.0.0.1:8080   ║
+║     • diff viewer, dry-run, approval gate                ║
+╚══════════════════════════════════════════════════════════╝
+Packaging choices that play nicely on-prem
+Single OCI image containing:
+
+OpenJDK 17 (for BC CLI and DataWeave JAR)
+
+Python 3.11 runtime
+
+Node runtime for the small UI
+
+tini as entry-point → keeps the whole thing systemd-friendly
+
+Provide an RPM/DEB for sites that forbid Docker.
+
+Configuration in one YAML file (agent.yml) pointing to:
+
+TIBCO_HOME
+
+BC admin credentials (or OS user allowed to run the CLI)
+
+APM client-ID/secret
+
+HTTP(S) proxy if direct internet is blocked
+
+3 Execution flow on the customer box
+Step	What happens	Command / API	Runs as
+1. Full export	Produce bc_full_<date>.csx	bcengine -exportConfigRepo	cron / operator
+2. Canonicalize	Unzip → convert XML fragments to Partner.json, Endpoint.json …	Python script using xmltodict	same
+3. Diff & approve	Agent UI shows coloured diff vs. last Git commit	localhost:8080	migration lead
+4. Push to APM	For each object call POST /v2/partners, POST /v2/endpoints, …	HTTPS 443 → MuleSoft	agent
+5. Save snapshot	Commit JSON + hash of APM IDs back to Git	git add && git commit	agent
+
+If the server is inside a locked-down network: keep steps 1-3 on the BC host, scp the approved JSON bundle to a jump-host that has internet, then run step 4 from there using the same loader code.
