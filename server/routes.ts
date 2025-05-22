@@ -104,6 +104,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Trigger extraction
   app.post("/api/extract", async (req, res) => {
     try {
+      console.log("Extraction request received:", req.body);
+      
       // Validate request body
       const schema = z.object({
         method: z.enum(["cli", "rest", "both"]),
@@ -116,10 +118,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const result = schema.safeParse(req.body);
       if (!result.success) {
+        console.error("Invalid extraction parameters:", result.error.format());
         return res.status(400).json({ message: "Invalid extraction parameters", errors: result.error.format() });
       }
 
       const { method, bcHome, credentials } = result.data;
+      console.log(`Starting ${method} extraction from TIBCO_HOME: ${bcHome}`);
 
       // Create extraction record
       const extraction = await storage.createExtraction({
@@ -129,13 +133,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
         artifactCount: 0,
         metadata: { bcHome, ...credentials }
       });
+      
+      console.log(`Created extraction record with ID: ${extraction.id}`);
 
       // Execute extraction asynchronously
       extractor.extract(bcHome, method, credentials)
         .then(async (extractedData) => {
+          console.log(`Extraction successful! Found ${extractedData.length} artifacts.`);
+          
+          // Log the types of artifacts found
+          const artifactTypes = extractedData.map(item => item.type);
+          const typeCounts = artifactTypes.reduce((acc, type) => {
+            acc[type] = (acc[type] || 0) + 1;
+            return acc;
+          }, {} as Record<string, number>);
+          
+          console.log("Artifact types found:", typeCounts);
+          
           // Process extracted data
           const artifacts = await Promise.all(
             extractedData.map(async (item) => {
+              console.log(`Processing artifact: ${item.name} (${item.type})`);
               return storage.createArtifact({
                 name: item.name,
                 originalId: item.id,
@@ -153,14 +171,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
             status: "completed",
             artifactCount: artifacts.length
           });
+          
+          console.log(`Extraction ${extraction.id} completed successfully with ${artifacts.length} artifacts`);
         })
         .catch(async (error) => {
-          // Update extraction with error
+          console.error("Extraction failed with error:", error);
+          console.error("Full error stack:", error instanceof Error ? error.stack : "No stack trace available");
+          
+          // Try to get more diagnostic info for Windows users
+          if (bcHome.includes(':\\')) {
+            console.log("Windows environment detected, checking TIBCO installation...");
+            try {
+              const binPath = path.join(bcHome, "bc", "bin");
+              const binExists = fs.existsSync(binPath);
+              console.log(`Checking BC bin directory (${binPath}): ${binExists ? "exists" : "not found"}`);
+              
+              if (binExists) {
+                const enginePath = path.join(binPath, "bcengine.exe");
+                const engineExists = fs.existsSync(enginePath);
+                console.log(`Checking bcengine.exe: ${engineExists ? "exists" : "not found"}`);
+              }
+            } catch (diagError) {
+              console.error("Error checking TIBCO installation:", diagError);
+            }
+          }
+          
+          // Update extraction with error and diagnostic info
           await storage.updateExtraction(extraction.id, {
             status: "failed",
             metadata: { 
               ...extraction.metadata, 
-              error: error instanceof Error ? error.message : String(error) 
+              error: error instanceof Error ? error.message : String(error),
+              stack: error instanceof Error ? error.stack : "No stack trace available",
+              timestamp: new Date().toISOString()
             }
           });
         });
