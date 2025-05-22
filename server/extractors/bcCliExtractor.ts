@@ -54,18 +54,45 @@ export class BcCliExtractor {
    */
   private async extractWithCli(bcHome: string): Promise<ExtractedItem[]> {
     try {
+      console.log(`Starting CLI extraction from BusinessConnect at: ${bcHome}`);
+      
+      // Normalize the path to handle Windows backslashes
+      const normalizedBcHome = bcHome.replace(/\\/g, '/');
+      console.log(`Normalized path: ${normalizedBcHome}`);
+      
+      // Create temp directory in a location that works on all platforms
       const tempDir = path.join(process.cwd(), "temp_extract");
       const timestamp = new Date().getTime();
       const outputFile = path.join(tempDir, `bc_export_${timestamp}.csx`);
+      
+      console.log(`Output will be saved to: ${outputFile}`);
       
       // Create temp directory if it doesn't exist
       if (!fs.existsSync(tempDir)) {
         fs.mkdirSync(tempDir, { recursive: true });
       }
 
-      // Build the CLI command
-      const bcBinPath = path.join(bcHome, "bc", "bin");
-      const command = `cd "${bcBinPath}" && ./bcengine -exportConfigRepo "${outputFile}" -overwrite`;
+      // Build the CLI command - handle paths differently based on platform
+      const isWindows = process.platform === 'win32' || bcHome.includes(':\\');
+      
+      // On Windows, we need to use the correct path format and executable name
+      let bcBinPath;
+      let engineExecutable;
+      
+      if (isWindows) {
+        // Windows paths with proper backslashes
+        bcBinPath = path.join(bcHome, "bc", "bin").replace(/\//g, '\\');
+        engineExecutable = "bcengine.exe";
+      } else {
+        // Unix paths
+        bcBinPath = path.join(bcHome, "bc", "bin");
+        engineExecutable = "./bcengine";
+      }
+      
+      // Use appropriate command format for the OS
+      const command = isWindows
+        ? `cd /d "${bcBinPath}" && ${engineExecutable} -exportConfigRepo "${outputFile}" -overwrite`
+        : `cd "${bcBinPath}" && ${engineExecutable} -exportConfigRepo "${outputFile}" -overwrite`;
       
       console.log(`Executing BusinessConnect CLI export: ${command}`);
       
@@ -267,9 +294,17 @@ export class BcCliExtractor {
       const defaultInfo = { host: "localhost", port: 9000 };
       
       // Try to read from configuration file
-      const configPath = path.join(bcHome, "bc", "config", "server.xml");
+      // Handle both Windows and Unix paths
+      let configPath = path.join(bcHome, "bc", "config", "server.xml");
+      
+      // Check if bcHome is a Windows-style path (e.g., C:\tibco)
+      if (bcHome.includes(':\\') && !fs.existsSync(configPath)) {
+        // Try Windows path with backslashes preserved (Node normally converts to forward slashes)
+        configPath = path.join(bcHome, "bc\\config\\server.xml");
+      }
       
       if (fs.existsSync(configPath)) {
+        console.log(`Found BC server config at: ${configPath}`);
         const configContent = fs.readFileSync(configPath, "utf8");
         const config = await parseStringPromise(configContent);
         
@@ -278,6 +313,8 @@ export class BcCliExtractor {
         const port = parseInt(config?.Server?.Port?.[0], 10) || defaultInfo.port;
         
         return { host, port };
+      } else {
+        console.log(`BC server config not found at: ${configPath}`);
       }
       
       return defaultInfo;
