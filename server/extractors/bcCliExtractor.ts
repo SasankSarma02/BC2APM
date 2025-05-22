@@ -56,9 +56,24 @@ export class BcCliExtractor {
     try {
       console.log(`Starting CLI extraction from BusinessConnect at: ${bcHome}`);
       
-      // Normalize the path to handle Windows backslashes
+      // For TIBCO installations that don't have a standard structure, let's check for specific patterns
+      // Normalized path to handle Windows backslashes
       const normalizedBcHome = bcHome.replace(/\\/g, '/');
       console.log(`Normalized path: ${normalizedBcHome}`);
+      
+      // Look for specific TIBCO components that might contain BusinessConnect
+      // From your folder structure, we'll check folders like "tpcl", "ems", "tra", etc.
+      const folderChecks = [
+        "tpcl", "tra", "components", "bw", "designer", "tibcojre", "tools"
+      ];
+      console.log(`Checking for BusinessConnect components in known TIBCO subfolders...`);
+      
+      folderChecks.forEach(folder => {
+        const folderPath = path.join(bcHome, folder);
+        if (fs.existsSync(folderPath)) {
+          console.log(`Found TIBCO component folder: ${folder}`);
+        }
+      });
       
       // Create temp directory in a location that works on all platforms
       const tempDir = path.join(process.cwd(), "temp_extract");
@@ -79,13 +94,74 @@ export class BcCliExtractor {
       let bcBinPath;
       let engineExecutable;
       
+      // Check for different possible path structures for TIBCO BusinessConnect
+      // Based on the user's TIBCO folder structure, we need to look in various locations
+      const possibleBcPaths = isWindows ? [
+        path.join(bcHome, "tpcl", "bin"),
+        path.join(bcHome, "bw", "bin"),
+        path.join(bcHome, "tra", "bin"),
+        path.join(bcHome, "components", "BusinessConnect", "bin"),
+        path.join(bcHome, "bc", "bin"),
+        path.join(bcHome, "BusinessConnect", "bin"),
+        path.join(bcHome, "TIBCO", "BusinessConnect", "bin"),
+        path.join(bcHome, "bin")
+      ] : [
+        path.join(bcHome, "bc", "bin"),
+        path.join(bcHome, "BusinessConnect", "bin"),
+        path.join(bcHome, "bin")
+      ];
+      
+      // Find the first existing path
+      let pathFound = false;
+      for (const possiblePath of possibleBcPaths) {
+        try {
+          console.log(`Checking for BC binaries at: ${possiblePath}`);
+          if (fs.existsSync(possiblePath)) {
+            console.log(`Found BC binaries at: ${possiblePath}`);
+            bcBinPath = isWindows ? possiblePath.replace(/\//g, '\\') : possiblePath;
+            pathFound = true;
+            break;
+          }
+        } catch (err) {
+          console.log(`Error checking path ${possiblePath}:`, err);
+        }
+      }
+      
+      if (!pathFound) {
+        // Default to the standard path even if not found
+        console.log(`No BC binaries found in common locations, using default path`);
+        bcBinPath = isWindows 
+          ? path.join(bcHome, "bc", "bin").replace(/\//g, '\\')
+          : path.join(bcHome, "bc", "bin");
+      }
+      
+      // Set the appropriate executable name
       if (isWindows) {
-        // Windows paths with proper backslashes
-        bcBinPath = path.join(bcHome, "bc", "bin").replace(/\//g, '\\');
-        engineExecutable = "bcengine.exe";
+        // Check for the existence of various possible executable names
+        const possibleExecutables = ["bcengine.exe", "BusinessConnect.exe", "bc.exe", "bcadmin.exe"];
+        let executableFound = false;
+        
+        for (const possibleExe of possibleExecutables) {
+          try {
+            const exePath = path.join(bcBinPath, possibleExe);
+            console.log(`Checking for executable: ${exePath}`);
+            if (fs.existsSync(exePath)) {
+              console.log(`Found executable: ${exePath}`);
+              engineExecutable = possibleExe;
+              executableFound = true;
+              break;
+            }
+          } catch (err) {
+            console.log(`Error checking executable ${possibleExe}:`, err);
+          }
+        }
+        
+        if (!executableFound) {
+          // Default to the standard executable even if not found
+          engineExecutable = "bcengine.exe";
+        }
       } else {
-        // Unix paths
-        bcBinPath = path.join(bcHome, "bc", "bin");
+        // Unix executable
         engineExecutable = "./bcengine";
       }
       
